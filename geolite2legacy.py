@@ -33,16 +33,11 @@ import codecs
 import logging
 import argparse
 
-# python 2 ipaddr
-try:
-    from ipaddr import IPNetwork
-# python3 built-in ipaddress
-except:
-    from ipaddress import ip_network as IPNetwork
-
+from ipaddress import ip_network as IPNetwork
 from time import time
 from zipfile import ZipFile
 from collections import defaultdict
+from unidecode import unidecode
 
 from pygeoip_const import *
 
@@ -59,11 +54,12 @@ continent_codes = {'AS': 'AP'}
 
 geoname2fips = {}
 output_encoding = 'utf-8'
-datfilecomment = ''
-
+zipdir = ''
 
 def serialize_text(text):
     try:
+        if output_encoding == 'latin-1' and isinstance(text, str):
+            text = unidecode(text)
         return text.encode(output_encoding)
     except UnicodeEncodeError:
         print('Warning cannot encode {!r} using {}'.format(text, output_encoding))
@@ -112,12 +108,7 @@ class RadixTree(object):
 
     def __setitem__(self, net, data):
         self.netcount += 1
-        # python2 ipaddr
-        try:
-            inet = int(net)
-        # python3 built-in ipaddress
-        except:
-            inet = int(net.network_address)
+        inet = int(net.network_address)
         node = self.segments[0]
         for depth in range(self.seek_depth, self.seek_depth - (net.prefixlen - 1), -1):
             if inet & (1 << depth):
@@ -201,6 +192,8 @@ class RadixTree(object):
         return self.encode_rec(rec, self.reclen)
 
     def serialize(self, f):
+        global zipdir
+
         if len(self.segments) >= 2 ** (8 * self.segreclen):
             logging.warning('too many segments for final segment record size!')
 
@@ -211,7 +204,7 @@ class RadixTree(object):
         f.write(struct.pack('B', 42))  # So long, and thanks for all the fish!
         f.write(b''.join(self.data_segments))
 
-        f.write(datfilecomment.encode('ascii'))  # .dat file comment - can be anything
+        f.write(str.encode(zipdir))  # .dat file comment - can be anything
         f.write(struct.pack('B', 0xff) * 3)
         f.write(struct.pack('B', self.edition))
         f.write(self.encode_rec(len(self.segments), self.segreclen))
@@ -242,6 +235,54 @@ class ASNv6RadixTree(ASNRadixTree):
     segreclen = SEGMENT_RECORD_LENGTH
 
 
+class ISPRadixTree(RadixTree):
+    seek_depth = 31
+    edition = ISP_EDITION
+    reclen = ORG_RECORD_LENGTH
+    segreclen = SEGMENT_RECORD_LENGTH
+
+    def gen_nets(self, locations, infile):
+        for row in csv.DictReader(infile):
+            nets = [IPNetwork(row['network'])]
+            org = decode_text(row['autonomous_system_organization'])
+            entry = u'{}'.format(org)
+            yield nets, (serialize_text(entry),)
+
+    def encode(self, data):
+        return data + b'\0'
+
+
+class ISPv6RadixTree(ISPRadixTree):
+    seek_depth = 127
+    edition = ISP_EDITION_V6
+    reclen = ORG_RECORD_LENGTH
+    segreclen = SEGMENT_RECORD_LENGTH
+
+
+class ORGRadixTree(RadixTree):
+    seek_depth = 31
+    edition = ORG_EDITION
+    reclen = ORG_RECORD_LENGTH
+    segreclen = SEGMENT_RECORD_LENGTH
+
+    def gen_nets(self, locations, infile):
+        for row in csv.DictReader(infile):
+            nets = [IPNetwork(row['network'])]
+            org = decode_text(row['autonomous_system_organization'])
+            entry = u'{}'.format(org)
+            yield nets, (serialize_text(entry),)
+
+    def encode(self, data):
+        return data + b'\0'
+
+
+class ORGv6RadixTree(ORGRadixTree):
+    seek_depth = 127
+    edition = ORG_EDITION_V6
+    reclen = ORG_RECORD_LENGTH
+    segreclen = SEGMENT_RECORD_LENGTH
+
+
 class CityRev1RadixTree(RadixTree):
     seek_depth = 31
     edition = CITY_EDITION_REV1
@@ -256,7 +297,10 @@ class CityRev1RadixTree(RadixTree):
 
             nets = [IPNetwork(row['network'])]
             country_iso_code = location['country_iso_code'] or location['continent_code']
-            fips_code = geoname2fips.get(location['geoname_id'])
+            if location['subdivision_1_iso_code'] != "":
+                fips_code = location['subdivision_1_iso_code']
+            else:
+                fips_code = geoname2fips.get(location['geoname_id'])
             if fips_code is None:
                 logging.debug('Missing fips-10-4 for {}'.format(location['subdivision_1_name']))
                 fips_code = '00'
@@ -350,7 +394,7 @@ class CountryRadixTree(RadixTree):
             f.write(self.serialize_node(node.rhs))
 
         f.write(struct.pack('B', 0x00) * 3)
-        f.write(datfilecomment.encode('ascii'))  # .dat file comment - can be anything
+        f.write(str.encode(zipdir))  # .dat file comment - can be anything
         f.write(struct.pack('B', 0xff) * 3)
         f.write(struct.pack('B', self.edition))
         f.write(self.encode_rec(len(self.segments), self.segreclen))
@@ -366,13 +410,9 @@ class Countryv6RadixTree(CountryRadixTree):
 RTree = {
     'Country': {'IPv4': CountryRadixTree, 'IPv6': Countryv6RadixTree},
     'City': {'IPv4': CityRev1RadixTree, 'IPv6': CityRev1v6RadixTree},
-    'ASN': {'IPv4': ASNRadixTree, 'IPv6': ASNv6RadixTree}
-}
-
-Filenames = {
-    'Country': {'IPv4': "GeoIP.dat", 'IPv6': "GeoIPv6.dat"},
-    'City': {'IPv4': "GeoIPCity.dat", 'IPv6': "GeoIPCityv6.dat"},
-    'ASN': {'IPv4': "GeoIPASNum.dat", 'IPv6': "GeoIPASNumv6.dat"}
+    'ASN': {'IPv4': ASNRadixTree, 'IPv6': ASNv6RadixTree},
+    'ORG': {'IPv4': ORGRadixTree, 'IPv6': ORGv6RadixTree},
+    'ISP': {'IPv4': ISPRadixTree, 'IPv6': ISPv6RadixTree}
 }
 
 
@@ -384,18 +424,21 @@ def parse_fips(fipsfile):
 
 
 def main():
-    global output_encoding, datfilecomment
+    global zipdir
 
     parser = argparse.ArgumentParser()
     parser.add_argument('-i', '--input-file', required=True, help='input zip file containings csv databases')
-    parser.add_argument('-o', '--output-file', help='output GeoIP dat file')
+    parser.add_argument('-o', '--output-file', required=True, help='output GeoIP dat file')
     parser.add_argument('-f', '--fips-file', help='geonameid to fips code mappings')
     parser.add_argument('-e', '--encoding', help='encoding to use for the output rather than utf-8')
     parser.add_argument('-d', '--debug', action='store_true', default=False, help='debug mode')
     parser.add_argument('-6', '--ipv6', action='store_const', default='IPv4', const='IPv6', help='use ipv6 database')
+    parser.add_argument('--org', action='store_true', default=False, help='create org-db from asn')
+    parser.add_argument('--isp', action='store_true', default=False, help='create isp-db from asn')
     opts = parser.parse_args()
 
     if opts.encoding:
+        global output_encoding
         try:
             codecs.lookup(opts.encoding)
         except LookupError as e:
@@ -403,7 +446,7 @@ def main():
             sys.exit(1)
         output_encoding = opts.encoding
 
-    re_entry = re.compile(r'.*?/Geo(?:Lite|IP)2-(?P<database>.*?)-(?P<filetype>.*?)-(?P<arg>.*)\.csv')
+    re_entry = re.compile(r'(?P<dirname>.*?)/Geo(?:Lite|IP)2-(?P<database>.*?)-(?P<filetype>.*?)-(?P<arg>.*)\.csv')
 
     entries = defaultdict(lambda: defaultdict(dict))
 
@@ -413,18 +456,23 @@ def main():
         if match is None:
             continue
 
-        db, filetype, arg = match.groups()
+        zipdir, db, filetype, arg = match.groups()
         entries[db][filetype][arg] = entry
 
     if len(entries) != 1:
         print('More than one kind of database found, please check the archive')
         sys.exit(1)
 
-    # noinspection PyUnboundLocalVariable
-    datfilecomment = '{} converted to legacy MaxMind DB with geolite2legacy'.format(os.path.dirname(entry.filename))
     dbtype, entries = entries.popitem()
+    zipdir = re.sub(r'(?:-(?:CSV_)?)', ' ', zipdir)
 
-    if dbtype == 'ASN':
+    if opts.org:
+        dbtype = 'ORG'
+
+    if opts.isp:
+        dbtype = 'ISP'
+
+    if dbtype == 'ASN' or dbtype == 'ORG' or dbtype == 'ISP':
         locs = None
     else:
         if not {'Locations', 'Blocks'} <= set(entries.keys()):
@@ -449,18 +497,17 @@ def main():
         print('The selected block file not found in archive')
         sys.exit(1)
 
-    if dbtype != 'ASN':
-        fips_file = opts.fips_file or os.path.join(os.path.dirname(os.path.realpath(__file__)), 'geoname2fips.csv')
-        parse_fips(fips_file)
+    if dbtype != 'ASN' and dbtype != 'ORG' and dbtype != 'ISP':
+        if opts.fips_file:
+            parse_fips(opts.fips_file)
+        else:
+            print('You need to specify geoname2fips.csv file')
+            sys.exit(1)
 
     tstart = time()
     print('Database type {} - Blocks {} - Encoding: {}'.format(dbtype, opts.ipv6, output_encoding))
 
     r.load(locs, TextIOWrapper(ziparchive.open(blocks, 'r'), encoding='utf-8'))
-
-    if not opts.output_file:
-        opts.output_file = Filenames[dbtype][opts.ipv6]
-        print('Output file {}'.format(opts.output_file))
 
     with open(opts.output_file, 'wb') as output:
         r.serialize(output)

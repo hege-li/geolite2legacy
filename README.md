@@ -1,4 +1,4 @@
-# geolite2legacy
+# geolite2legacy (forked with extra features)
 
 This tool will convert MaxMind GeoLite2 Database to the old legacy format.
 
@@ -8,31 +8,39 @@ directly from zip files containings CSV databases.
 You can download databases from
 [https://dev.maxmind.com/geoip/geoip2/geolite2/](https://dev.maxmind.com/geoip/geoip2/geolite2/)
 
-It's tested with python/pypy 2.7 and python 3.5+
+It's tested with python/pypy 3.6+
 
 ## Limitations
 
 - Processing may be slow, expecially for City blocks, consider using pypy, it is a lot faster
-- Some software may expect iso-8859-1 encoded names, but the script will output utf-8,
-  you can force a different encoding e.g. using `-e iso-8859-1` but some name may result wrong
+- Some software may expect iso-8859-1 encoded names, but the script will output utf-8 by default.
+  You should use `-e latin-1` for iso-8859-1 output, which will be converted with [https://pypi.org/project/Unidecode/](Unidecode) module.
 
-## Examples
+## Examples to create all possible database versions
 
 ```text
-$ ./geolite2legacy.py -i GeoLite2-Country-CSV.zip -f geoname2fips.csv -o GeoIP.dat
-Database type Country - Blocks IPv4
-wrote 306385-node trie with 300679 networks (251 distinct labels) in 8 seconds
-
-# ./geolite2legacy.py -i GeoLite2-ASN-CSV.zip -o GeoIPASNum.dat
-Database type ASN - Blocks IPv4
-wrote 518484-node trie with 417952 networks (62896 distinct labels) in 15 seconds
+# Country/City
+./compact.sh
+./geolite2legacy.py -i GeoLite2-Country-CSV_mod.zip -f geoname2fips.csv -e latin-1 -o GeoIP.dat
+./geolite2legacy.py -i GeoLite2-Country-CSV_mod.zip -f geoname2fips.csv -6 -e latin-1 -o GeoIPv6.dat
+./geolite2legacy.py -i GeoLite2-City-CSV_mod.zip -f geoname2fips.csv -e latin-1 -o GeoIPCity.dat
+./geolite2legacy.py -i GeoLite2-City-CSV_mod.zip -f geoname2fips.csv -6 -e latin-1 -o GeoIPCityv6.dat
+# ASN
+./geolite2legacy.py -i GeoLite2-ASN-CSV.zip -e latin-1 -o GeoIPASNum.dat
+./geolite2legacy.py -i GeoLite2-ASN-CSV.zip -6 -e latin-1 -o GeoIPASNumv6.dat
+# ORG
+./geolite2legacy.py -i GeoLite2-ASN-CSV.zip --org -e latin-1 -o GeoIPOrg.dat
+./geolite2legacy.py -i GeoLite2-ASN-CSV.zip --org -6 -e latin-1 -o GeoIPOrgv6.dat
+# ISP
+./geolite2legacy.py -i GeoLite2-ASN-CSV.zip --isp -e latin-1 -o GeoIPISP.dat
+./geolite2legacy.py -i GeoLite2-ASN-CSV.zip --isp -6 -e latin-1 -o GeoIPISPv6.dat
 ```
 
 ## Usage
 
 ```text
 usage: geolite2legacy.py [-h] -i INPUT_FILE -o OUTPUT_FILE [-f FIPS_FILE]
-                         [-e ENCODING] [-d] [-6]
+                         [-e ENCODING] [-d] [-6] [--org] [--isp]
 
 optional arguments:
   -h, --help            show this help message and exit
@@ -46,20 +54,8 @@ optional arguments:
                         encoding to use for the output rather than utf-8
   -d, --debug           debug mode
   -6, --ipv6            use ipv6 database
-```
-
-## Run inside Docker container
-
-1. Build the Docker image:
-
-```bash
-docker build -t geolite2legacy .
-```
-
-2. This command assmes that you have downloaded the GeoLite2 database to the current directory.
-
-```bash
-docker run -it -v $(pwd):/src geolite2legacy:latest -i /src/GeoLite2-Country-CSV.zip -o /src/GeoIP.dat
+  --org                 create org-db from asn
+  --isp                 create isp-db from asn
 ```
 
 ```text
